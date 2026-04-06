@@ -55,19 +55,21 @@ export const EmergencyModel = {
     }): Promise<Emergency> => {
         const result = await pool.query(
             `INSERT INTO emergencies (title, description, type, latitude, longitude, reported_by)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
             [data.title, data.description || null, data.type,
             data.latitude, data.longitude, data.reported_by || null]
         )
         return result.rows[0]
     },
 
-    updateStatus: async (id: string, status: string, assignedTo?: string): Promise<Emergency | null> => {
+    // Fixed: removed COALESCE on assigned_to to avoid type issues
+    updateStatus: async (id: string, status: string): Promise<Emergency | null> => {
         const result = await pool.query(
             `UPDATE emergencies
-       SET status = $1, assigned_to = COALESCE($2, assigned_to), updated_at = NOW()
-       WHERE id = $3 RETURNING *`,
-            [status, assignedTo || null, id]
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+            [status, id]
         )
         return result.rows[0] || null
     },

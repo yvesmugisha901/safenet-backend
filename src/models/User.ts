@@ -12,54 +12,60 @@ export interface User {
 }
 
 export const UserModel = {
-    // Find by email
     findByEmail: async (email: string): Promise<User | null> => {
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email])
-        return result.rows[0] || null
+        const r = await pool.query('SELECT * FROM users WHERE email = $1', [email])
+        return r.rows[0] || null
     },
 
-    // Find by ID
     findById: async (id: string): Promise<User | null> => {
-        const result = await pool.query(
-            'SELECT id, name, email, phone, role, created_at FROM users WHERE id = $1',
-            [id]
+        const r = await pool.query(
+            'SELECT id, name, email, phone, role, created_at FROM users WHERE id = $1', [id]
         )
-        return result.rows[0] || null
+        return r.rows[0] || null
     },
 
-    // Create new user
-    create: async (data: {
-        name: string; email: string; password: string; phone?: string; role?: string
-    }): Promise<User> => {
-        const result = await pool.query(
+    create: async (data: { name: string; email: string; password: string; phone?: string; role?: string }): Promise<User> => {
+        const r = await pool.query(
             `INSERT INTO users (name, email, password, phone, role)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, email, phone, role, created_at`,
+       VALUES ($1,$2,$3,$4,$5) RETURNING id, name, email, phone, role, created_at`,
             [data.name, data.email, data.password, data.phone || null, data.role || 'user']
         )
-        return result.rows[0]
+        return r.rows[0]
     },
 
-    // Get all users (admin)
     findAll: async (): Promise<User[]> => {
-        const result = await pool.query(
+        const r = await pool.query(
             'SELECT id, name, email, phone, role, created_at FROM users ORDER BY created_at DESC'
         )
-        return result.rows
+        return r.rows
     },
 
-    // Update role
     updateRole: async (id: string, role: string): Promise<User | null> => {
-        const result = await pool.query(
-            'UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, email, role',
-            [role, id]
+        const r = await pool.query(
+            'UPDATE users SET role=$1, updated_at=NOW() WHERE id=$2 RETURNING id,name,email,role', [role, id]
         )
-        return result.rows[0] || null
+        return r.rows[0] || null
     },
 
-    // Delete user
+    updateProfile: async (id: string, data: { name?: string; phone?: string; password?: string }): Promise<User | null> => {
+        const fields: string[] = []
+        const values: any[] = []
+        let i = 1
+        if (data.name) { fields.push(`name=$${i++}`); values.push(data.name) }
+        if (data.phone !== undefined) { fields.push(`phone=$${i++}`); values.push(data.phone) }
+        if (data.password) { fields.push(`password=$${i++}`); values.push(data.password) }
+        if (!fields.length) return null
+        fields.push(`updated_at=NOW()`)
+        values.push(id)
+        const r = await pool.query(
+            `UPDATE users SET ${fields.join(',')} WHERE id=$${i} RETURNING id,name,email,phone,role,created_at`,
+            values
+        )
+        return r.rows[0] || null
+    },
+
     delete: async (id: string): Promise<boolean> => {
-        const result = await pool.query('DELETE FROM users WHERE id = $1', [id])
-        return (result.rowCount ?? 0) > 0
+        const r = await pool.query('DELETE FROM users WHERE id=$1', [id])
+        return (r.rowCount ?? 0) > 0
     },
 }

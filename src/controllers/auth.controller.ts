@@ -2,19 +2,19 @@ import { Request, Response } from 'express'
 import bcrypt from 'bcryptjs'
 import { UserModel } from '../models/User'
 import { signToken } from '../config/jwt'
+import { AuthRequest } from '../middleware/auth'
 
 export const register = async (req: Request, res: Response) => {
     const { name, email, password, phone, role = 'user' } = req.body
     try {
         const existing = await UserModel.findByEmail(email)
         if (existing) return res.status(400).json({ error: 'Email already registered' })
-
         const hashed = await bcrypt.hash(password, 12)
         const user = await UserModel.create({ name, email, password: hashed, phone, role })
         const token = signToken({ id: user.id, email: user.email, role: user.role })
         res.status(201).json({ user, token })
     } catch (err) {
-        console.error('Register error:', err)
+        console.error(err)
         res.status(500).json({ error: 'Registration failed' })
     }
 }
@@ -24,26 +24,49 @@ export const login = async (req: Request, res: Response) => {
     try {
         const user = await UserModel.findByEmail(email)
         if (!user) return res.status(401).json({ error: 'Invalid credentials' })
-
         const match = await bcrypt.compare(password, user.password)
         if (!match) return res.status(401).json({ error: 'Invalid credentials' })
-
         const token = signToken({ id: user.id, email: user.email, role: user.role })
         const { password: _, ...safeUser } = user
         res.json({ user: safeUser, token })
     } catch (err) {
-        console.error('Login error:', err)
+        console.error(err)
         res.status(500).json({ error: 'Login failed' })
     }
 }
 
-export const getMe = async (req: any, res: Response) => {
+export const getMe = async (req: AuthRequest, res: Response) => {
     try {
-        const user = await UserModel.findById(req.user.id)
+        const user = await UserModel.findById(req.user!.id)
         if (!user) return res.status(404).json({ error: 'User not found' })
         res.json(user)
     } catch (err) {
         res.status(500).json({ error: 'Failed to get user' })
+    }
+}
+
+export const updateProfile = async (req: AuthRequest, res: Response) => {
+    const { name, phone, currentPassword, newPassword } = req.body
+    try {
+        const user = await UserModel.findByEmail(req.user!.email)
+        if (!user) return res.status(404).json({ error: 'User not found' })
+
+        // If changing password, verify current one
+        if (newPassword) {
+            if (!currentPassword) return res.status(400).json({ error: 'Current password required' })
+            const match = await bcrypt.compare(currentPassword, user.password)
+            if (!match) return res.status(400).json({ error: 'Current password is incorrect' })
+        }
+
+        const updated = await UserModel.updateProfile(req.user!.id, {
+            name: name || user.name,
+            phone: phone !== undefined ? phone : user.phone,
+            password: newPassword ? await bcrypt.hash(newPassword, 12) : undefined,
+        })
+        res.json(updated)
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Failed to update profile' })
     }
 }
 
@@ -60,9 +83,7 @@ export const updateUserRole = async (req: Request, res: Response) => {
     const { id } = req.params
     const { role } = req.body
     const validRoles = ['user', 'resource_manager', 'admin']
-    if (!validRoles.includes(role)) {
-        return res.status(400).json({ error: 'Invalid role' })
-    }
+    if (!validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' })
     try {
         const user = await UserModel.updateRole(id, role)
         if (!user) return res.status(404).json({ error: 'User not found' })

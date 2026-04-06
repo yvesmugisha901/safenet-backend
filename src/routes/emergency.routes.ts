@@ -11,13 +11,13 @@ import { validateEmergency } from '../middleware/validate'
 
 const router = Router()
 
-// Static routes FIRST
 router.post('/', authenticate, validateEmergency, reportEmergency)
 router.get('/', authenticate, listEmergencies)
 router.get('/stats', authenticate, authorize('admin'), getStats)
-
-// Dynamic routes LAST
 router.get('/:id', authenticate, getEmergency)
-router.patch('/:id/status', authenticate, authorize('resource_manager', 'admin'), updateEmergencyStatus)
+
+// Allow user to also update their own emergency status (cancel)
+// resource_manager and admin can update any
+router.patch('/:id/status', authenticate, updateEmergencyStatus)
 
 export default router
