@@ -17,8 +17,8 @@ export const register = async (req: Request, res: Response) => {
         const user = r.rows[0]
         const token = signToken({ id: user.id, email: user.email, role: user.role })
         res.status(201).json({ user, token })
-    } catch (err) {
-        console.error('register error:', err)
+    } catch (err: any) {
+        console.error('register error:', err.message)
         res.status(500).json({ error: 'Registration failed' })
     }
 }
@@ -34,8 +34,8 @@ export const login = async (req: Request, res: Response) => {
         const token = signToken({ id: user.id, email: user.email, role: user.role })
         const { password: _, ...safeUser } = user
         res.json({ user: safeUser, token })
-    } catch (err) {
-        console.error('login error:', err)
+    } catch (err: any) {
+        console.error('login error:', err.message)
         res.status(500).json({ error: 'Login failed' })
     }
 }
@@ -48,50 +48,56 @@ export const getMe = async (req: AuthRequest, res: Response) => {
         )
         if (!r.rows[0]) return res.status(404).json({ error: 'User not found' })
         res.json(r.rows[0])
-    } catch (err) {
+    } catch (err: any) {
+        console.error('getMe error:', err.message)
         res.status(500).json({ error: 'Failed to get user' })
     }
 }
 
 export const updateProfile = async (req: AuthRequest, res: Response) => {
-    console.log('updateProfile body:', req.body, 'user:', req.user?.id)
     const { name, phone, currentPassword, newPassword } = req.body
+    console.log('updateProfile called — userId:', req.user?.id, '| body keys:', Object.keys(req.body))
     try {
-        // Get current user with password
-        const r = await pool.query('SELECT * FROM users WHERE id=$1', [req.user!.id])
-        const user = r.rows[0]
-        if (!user) return res.status(404).json({ error: 'User not found' })
+        // fetch current user
+        const userRes = await pool.query('SELECT * FROM users WHERE id=$1', [req.user!.id])
+        if (!userRes.rows[0]) return res.status(404).json({ error: 'User not found' })
+        const user = userRes.rows[0]
 
-        // Password change requested
+        const setClauses: string[] = []
+        const vals: any[] = []
+        let idx = 1
+
+        if (name && name.trim()) {
+            setClauses.push(`name=$${idx++}`)
+            vals.push(name.trim())
+        }
+        if (phone !== undefined) {
+            setClauses.push(`phone=$${idx++}`)
+            vals.push(phone.trim() || null)
+        }
         if (newPassword) {
-            if (!currentPassword) return res.status(400).json({ error: 'Current password is required' })
-            const match = await bcrypt.compare(currentPassword, user.password)
-            if (!match) return res.status(400).json({ error: 'Current password is incorrect' })
+            if (!currentPassword) return res.status(400).json({ error: 'Current password is required to change password' })
+            const ok = await bcrypt.compare(currentPassword, user.password)
+            if (!ok) return res.status(400).json({ error: 'Current password is incorrect' })
             if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' })
+            setClauses.push(`password=$${idx++}`)
+            vals.push(await bcrypt.hash(newPassword, 12))
         }
 
-        const fields: string[] = []
-        const values: any[] = []
-        let i = 1
+        if (setClauses.length === 0) return res.status(400).json({ error: 'Nothing to update' })
 
-        if (name !== undefined && name.trim()) { fields.push(`name=$${i++}`); values.push(name.trim()) }
-        if (phone !== undefined) { fields.push(`phone=$${i++}`); values.push(phone || null) }
-        if (newPassword) { fields.push(`password=$${i++}`); values.push(await bcrypt.hash(newPassword, 12)) }
+        setClauses.push(`updated_at=NOW()`)
+        vals.push(req.user!.id)
 
-        if (fields.length === 0) return res.status(400).json({ error: 'No fields to update' })
+        const sql = `UPDATE users SET ${setClauses.join(', ')} WHERE id=$${idx} RETURNING id,name,email,phone,role,created_at`
+        console.log('updateProfile SQL:', sql, '| vals count:', vals.length)
 
-        fields.push('updated_at=NOW()')
-        values.push(req.user!.id)
-
-        const updated = await pool.query(
-            `UPDATE users SET ${fields.join(',')} WHERE id=$${i} RETURNING id,name,email,phone,role,created_at`,
-            values
-        )
-        console.log('Profile updated:', updated.rows[0])
+        const updated = await pool.query(sql, vals)
+        console.log('updateProfile success:', updated.rows[0]?.name)
         res.json(updated.rows[0])
-    } catch (err) {
-        console.error('updateProfile error:', err)
-        res.status(500).json({ error: 'Failed to update profile' })
+    } catch (err: any) {
+        console.error('updateProfile ERROR:', err.message, err.stack)
+        res.status(500).json({ error: `Failed to update profile: ${err.message}` })
     }
 }
 
@@ -99,7 +105,8 @@ export const getAllUsers = async (_req: Request, res: Response) => {
     try {
         const r = await pool.query('SELECT id,name,email,phone,role,created_at FROM users ORDER BY created_at DESC')
         res.json(r.rows)
-    } catch (err) {
+    } catch (err: any) {
+        console.error('getAllUsers error:', err.message)
         res.status(500).json({ error: 'Failed to fetch users' })
     }
 }
@@ -116,7 +123,8 @@ export const updateUserRole = async (req: Request, res: Response) => {
         )
         if (!r.rows[0]) return res.status(404).json({ error: 'User not found' })
         res.json(r.rows[0])
-    } catch (err) {
+    } catch (err: any) {
+        console.error('updateUserRole error:', err.message)
         res.status(500).json({ error: 'Failed to update role' })
     }
 }
