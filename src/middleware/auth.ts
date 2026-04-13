@@ -5,10 +5,9 @@ export interface AuthRequest extends Request {
   user?: { id: string; role: string; email: string }
 }
 
-// Use this type in all your controllers instead of AuthRequest
 export type AuthenticatedRequest = AuthRequest & Request
 
-export const authenticate = (req: AuthRequest, res: Response, next: NextFunction) => {
+export const authenticate = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'No token provided' })
@@ -24,7 +23,7 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
 }
 
 export const authorize = (...roles: string[]) => {
-  return (req: AuthRequest, res: Response, next: NextFunction) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     console.log('Auth check — user role:', req.user?.role, '| allowed:', roles)
     if (!req.user || !roles.includes(req.user.role)) {
       return res.status(403).json({
