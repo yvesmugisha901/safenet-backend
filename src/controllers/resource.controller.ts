@@ -1,5 +1,5 @@
 import { Response } from 'express'
-import { AuthRequest } from '../middleware/auth'
+import { AuthenticatedRequest } from '../middleware/auth'
 import pool from '../config/db'
 import { haversineDistance } from '../utils/geo'
 import { io } from '../server'
@@ -19,7 +19,7 @@ async function notifyAdmins(message: string) {
   }
 }
 
-export const listResources = async (_req: AuthRequest, res: Response) => {
+export const listResources = async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT res.*, u.name AS manager_name
@@ -33,7 +33,7 @@ export const listResources = async (_req: AuthRequest, res: Response) => {
   }
 }
 
-export const getMyResources = async (req: AuthRequest, res: Response) => {
+export const getMyResources = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT res.*, u.name AS manager_name
@@ -48,7 +48,7 @@ export const getMyResources = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const getNearbyResources = async (req: AuthRequest, res: Response) => {
+export const getNearbyResources = async (req: AuthenticatedRequest, res: Response) => {
   const lat = parseFloat(req.query.lat as string)
   const lng = parseFloat(req.query.lng as string)
   const radius = parseFloat(req.query.radius as string) || 10
@@ -70,7 +70,7 @@ export const getNearbyResources = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const getResource = async (req: AuthRequest, res: Response) => {
+export const getResource = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT res.*, u.name AS manager_name
@@ -85,7 +85,7 @@ export const getResource = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const createResource = async (req: AuthRequest, res: Response) => {
+export const createResource = async (req: AuthenticatedRequest, res: Response) => {
   console.log('createResource — body:', req.body, '| user:', req.user?.id, req.user?.role)
   const { name, type, address, latitude, longitude, capacity, phone } = req.body
   try {
@@ -101,12 +101,10 @@ export const createResource = async (req: AuthRequest, res: Response) => {
     const resource = r.rows[0]
     console.log('Resource created successfully:', resource.id)
 
-    // Get manager name for admin notification
     const managerRes = await pool.query('SELECT name FROM users WHERE id=$1', [req.user!.id])
     const managerName = managerRes.rows[0]?.name || 'A resource manager'
     const now = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 
-    // Notify all admins
     await notifyAdmins(
       `🏥 ${managerName} added a new resource: "${name}" (${type.replace('_', ' ')}) at ${address} — ${now}`
     )
@@ -118,7 +116,7 @@ export const createResource = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const updateResource = async (req: AuthRequest, res: Response) => {
+export const updateResource = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const check = await pool.query('SELECT * FROM resources WHERE id=$1', [req.params.id])
     if (!check.rows[0]) return res.status(404).json({ error: 'Resource not found' })
@@ -148,7 +146,7 @@ export const updateResource = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const deleteResource = async (req: AuthRequest, res: Response) => {
+export const deleteResource = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const r = await pool.query('DELETE FROM resources WHERE id=$1', [req.params.id])
     if ((r.rowCount ?? 0) === 0) return res.status(404).json({ error: 'Resource not found' })

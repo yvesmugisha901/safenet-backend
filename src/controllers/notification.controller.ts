@@ -1,8 +1,8 @@
 import { Response } from 'express'
-import { AuthRequest } from '../middleware/auth'
+import { AuthenticatedRequest } from '../middleware/auth'
 import pool from '../config/db'
 
-export const listNotifications = async (req: AuthRequest, res: Response) => {
+export const listNotifications = async (req: AuthenticatedRequest, res: Response) => {
   console.log(`listNotifications — userId: ${req.user!.id}, role: ${req.user!.role}`)
   try {
     const r = await pool.query(
@@ -23,7 +23,7 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const getUnreadCount = async (req: AuthRequest, res: Response) => {
+export const getUnreadCount = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const r = await pool.query(
       'SELECT COUNT(*) AS count FROM notifications WHERE user_id=$1 AND read=FALSE',
@@ -36,7 +36,7 @@ export const getUnreadCount = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const markRead = async (req: AuthRequest, res: Response) => {
+export const markRead = async (req: AuthenticatedRequest, res: Response) => {
   try {
     await pool.query(
       'UPDATE notifications SET read=TRUE WHERE id=$1 AND user_id=$2',
@@ -49,7 +49,7 @@ export const markRead = async (req: AuthRequest, res: Response) => {
   }
 }
 
-export const markAllRead = async (req: AuthRequest, res: Response) => {
+export const markAllRead = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const r = await pool.query(
       'UPDATE notifications SET read=TRUE WHERE user_id=$1 AND read=FALSE',

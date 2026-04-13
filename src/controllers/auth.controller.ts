@@ -2,7 +2,7 @@ import { Request, Response } from 'express'
 import bcrypt from 'bcryptjs'
 import pool from '../config/db'
 import { signToken } from '../config/jwt'
-import { AuthRequest } from '../middleware/auth'
+import { AuthenticatedRequest } from '../middleware/auth'
 
 export const register = async (req: Request, res: Response) => {
     const { name, email, password, phone, role = 'user' } = req.body
@@ -40,7 +40,7 @@ export const login = async (req: Request, res: Response) => {
     }
 }
 
-export const getMe = async (req: AuthRequest, res: Response) => {
+export const getMe = async (req: AuthenticatedRequest, res: Response) => {
     try {
         const r = await pool.query(
             'SELECT id,name,email,phone,role,created_at FROM users WHERE id=$1',
@@ -54,11 +54,10 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     }
 }
 
-export const updateProfile = async (req: AuthRequest, res: Response) => {
+export const updateProfile = async (req: AuthenticatedRequest, res: Response) => {
     const { name, phone, currentPassword, newPassword } = req.body
     console.log('updateProfile called — userId:', req.user?.id, '| body keys:', Object.keys(req.body))
     try {
-        // fetch current user
         const userRes = await pool.query('SELECT * FROM users WHERE id=$1', [req.user!.id])
         if (!userRes.rows[0]) return res.status(404).json({ error: 'User not found' })
         const user = userRes.rows[0]

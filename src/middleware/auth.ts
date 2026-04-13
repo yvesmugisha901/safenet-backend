@@ -5,6 +5,9 @@ export interface AuthRequest extends Request {
   user?: { id: string; role: string; email: string }
 }
 
+// Use this type in all your controllers instead of AuthRequest
+export type AuthenticatedRequest = AuthRequest & Request
+
 export const authenticate = (req: AuthRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
