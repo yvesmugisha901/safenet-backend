@@ -35,9 +35,23 @@ app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(express.json());
 
 // ── Routes ───────────────────────────────────────────────────
-app.use('/api/auth',          authRoutes);
-app.use('/api/emergencies',   emergencyRoutes);
-app.use('/api/resources',     resourceRoutes);
+app.get('/', (_req, res) => {
+  res.json({
+    status: '🚀 SafeNet API is running',
+    version: '1.0.0',
+    endpoints: {
+      auth: '/api/auth',
+      emergencies: '/api/emergencies',
+      resources: '/api/resources',
+      notifications: '/api/notifications',
+      health: '/api/health',
+    }
+  });
+});
+
+app.use('/api/auth', authRoutes);
+app.use('/api/emergencies', emergencyRoutes);
+app.use('/api/resources', resourceRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'OK', time: new Date() }));
