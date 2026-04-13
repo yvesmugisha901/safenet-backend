@@ -6,12 +6,18 @@ import { sendSMS } from '../services/twilio.service'
 import { sendEmail } from '../services/sendgrid.service'
 import { io } from '../server'
 
-const MAX_RADIUS_KM = 20
+// Priority config — how many resources to alert and max radius
+const PRIORITY_CONFIG = {
+  low:      { maxResources: 3, radiusKm: 10 },
+  medium:   { maxResources: 5, radiusKm: 20 },
+  high:     { maxResources: 8, radiusKm: 30 },
+  critical: { maxResources: 999, radiusKm: 999 }, // ALL available resources
+}
 
-async function createNotif(userId: string, emergencyId: string, message: string, channel = 'in_app') {
+async function createNotif(userId: string, emergencyId: string | null, message: string, channel = 'in_app') {
   try {
     const r = await pool.query(
-      `INSERT INTO notifications (user_id,emergency_id,message,channel) VALUES ($1,$2,$3,$4) RETURNING *`,
+      `INSERT INTO notifications (user_id, emergency_id, message, channel) VALUES ($1,$2,$3,$4) RETURNING *`,
       [userId, emergencyId, message, channel]
     )
     return r.rows[0]
@@ -21,10 +27,9 @@ async function createNotif(userId: string, emergencyId: string, message: string,
   }
 }
 
-async function notifyAllAdmins(emergencyId: string, message: string) {
+async function notifyAllAdmins(emergencyId: string | null, message: string) {
   try {
     const admins = await pool.query(`SELECT id FROM users WHERE role='admin'`)
-    console.log(`Notifying ${admins.rows.length} admin(s): ${message}`)
     for (const admin of admins.rows) {
       const notif = await createNotif(admin.id, emergencyId, message)
       if (notif) io.to(`user_${admin.id}`).emit('notification', notif)
@@ -35,58 +40,87 @@ async function notifyAllAdmins(emergencyId: string, message: string) {
 }
 
 export const reportEmergency = async (req: AuthRequest, res: Response) => {
-  const { title, description, type, latitude, longitude } = req.body
+  const { title, description, type, latitude, longitude, priority = 'medium' } = req.body
+
+  const validPriorities = ['low','medium','high','critical']
+  if (!validPriorities.includes(priority)) {
+    return res.status(400).json({ error: 'Invalid priority. Must be low, medium, high or critical' })
+  }
+
   try {
+    // 1. Save emergency with priority
     const eRes = await pool.query(
-      `INSERT INTO emergencies (title,description,type,latitude,longitude,reported_by)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [title, description || null, type, parseFloat(latitude), parseFloat(longitude), req.user?.id || null]
+      `INSERT INTO emergencies (title, description, type, latitude, longitude, reported_by, priority)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [title, description||null, type, parseFloat(latitude), parseFloat(longitude), req.user?.id||null, priority]
     )
     const emergency = eRes.rows[0]
 
-    // Find nearby available resources
+    const config = PRIORITY_CONFIG[priority as keyof typeof PRIORITY_CONFIG]
+    console.log(`Emergency reported: priority=${priority}, maxResources=${config.maxResources}, radius=${config.radiusKm}km`)
+
+    // 2. Find available resources based on priority config
     const rRes = await pool.query(
       `SELECT res.*, u.phone AS manager_phone, u.email AS manager_email
        FROM resources res LEFT JOIN users u ON u.id = res.manager_id
        WHERE res.available = TRUE`
     )
-    const nearby = rRes.rows
-      .map((r: any) => ({ ...r, distance_km: haversineDistance(latitude, longitude, r.latitude, r.longitude) }))
-      .filter((r: any) => r.distance_km <= MAX_RADIUS_KM)
-      .sort((a: any, b: any) => a.distance_km - b.distance_km)
-      .slice(0, 5)
 
-    // Alert each nearby resource manager
+    let nearby = rRes.rows
+      .map((r: any) => ({ ...r, distance_km: haversineDistance(latitude, longitude, r.latitude, r.longitude) }))
+      .filter((r: any) => r.distance_km <= config.radiusKm)
+      .sort((a: any, b: any) => a.distance_km - b.distance_km)
+      .slice(0, config.maxResources)
+
+    // For critical — alert ALL regardless of distance
+    if (priority === 'critical') {
+      nearby = rRes.rows.map((r: any) => ({
+        ...r,
+        distance_km: haversineDistance(latitude, longitude, r.latitude, r.longitude)
+      })).sort((a: any, b: any) => a.distance_km - b.distance_km)
+    }
+
+    console.log(`Alerting ${nearby.length} resources`)
+
+    // 3. Alert each resource manager
     for (const resource of nearby) {
-      const msg = `🚨 SAFENET: "${title}" (${type}) reported ${resource.distance_km.toFixed(1)}km from ${resource.name}`
+      const priorityLabel = priority === 'critical' ? '🚨🚨 CRITICAL' :
+                            priority === 'high'     ? '🔴 HIGH PRIORITY' :
+                            priority === 'medium'   ? '⚠️' : '📋'
+      const msg = `${priorityLabel} SAFENET: "${title}" (${type}) ${resource.distance_km.toFixed(1)}km from ${resource.name}`
+
       if (resource.manager_phone) await sendSMS(resource.manager_phone, msg)
-      if (resource.manager_email) await sendEmail({ to: resource.manager_email, subject: `Emergency Alert — ${title}`, text: msg })
+      if (resource.manager_email) {
+        await sendEmail({
+          to: resource.manager_email,
+          subject: `${priority === 'critical' ? '🚨 CRITICAL ' : ''}Emergency Alert — ${title}`,
+          text: `${msg}\n\nPriority: ${priority.toUpperCase()}\nDescription: ${description||'N/A'}\nLocation: ${latitude}, ${longitude}`,
+        })
+      }
       if (resource.manager_id) {
-        const notif = await createNotif(resource.manager_id, emergency.id, msg)
+        const notif = await createNotif(resource.manager_id, emergency.id,
+          `${priorityLabel} ${msg}`)
         if (notif) io.to(`user_${resource.manager_id}`).emit('notification', notif)
       }
     }
 
-    // Notify reporter
+    // 4. Notify reporter
     if (req.user?.id) {
       const notif = await createNotif(
         req.user.id, emergency.id,
-        `✅ Your emergency report "${title}" was submitted. ${nearby.length} nearby resource${nearby.length !== 1 ? 's' : ''} alerted.`
+        `✅ Your ${priority} priority emergency "${title}" was submitted. ${nearby.length} resource${nearby.length!==1?'s':''} alerted.`
       )
       if (notif) io.to(`user_${req.user.id}`).emit('notification', notif)
     }
 
-    // Get reporter name for admin audit
+    // 5. Notify admins
     let reporterName = 'Anonymous'
     if (req.user?.id) {
       const uRes = await pool.query('SELECT name FROM users WHERE id=$1', [req.user.id])
       if (uRes.rows[0]) reporterName = uRes.rows[0].name
     }
-
-    // Notify all admins
-    await notifyAllAdmins(
-      emergency.id,
-      `📋 New emergency: "${title}" (${type}) — reported by ${reporterName} — ${nearby.length} resource${nearby.length !== 1 ? 's' : ''} alerted`
+    await notifyAllAdmins(emergency.id,
+      `📋 New ${priority.toUpperCase()} emergency: "${title}" (${type}) — by ${reporterName} — ${nearby.length} resources alerted`
     )
 
     io.emit('new_emergency', { emergency, nearbyResources: nearby })
@@ -100,9 +134,16 @@ export const reportEmergency = async (req: AuthRequest, res: Response) => {
 export const listEmergencies = async (_req: AuthRequest, res: Response) => {
   try {
     const r = await pool.query(
-      `SELECT e.*, u.name AS reported_by_name
-       FROM emergencies e LEFT JOIN users u ON u.id = e.reported_by
-       ORDER BY e.created_at DESC`
+      `SELECT e.*,
+              u.name AS reported_by_name,
+              res.name AS assigned_resource_name,
+              res.type AS assigned_resource_type
+       FROM emergencies e
+       LEFT JOIN users u ON u.id = e.reported_by
+       LEFT JOIN resources res ON res.id = e.assigned_resource_id
+       ORDER BY
+         CASE e.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+         e.created_at DESC`
     )
     res.json(r.rows)
   } catch (err: any) {
@@ -114,8 +155,12 @@ export const listEmergencies = async (_req: AuthRequest, res: Response) => {
 export const getEmergency = async (req: AuthRequest, res: Response) => {
   try {
     const r = await pool.query(
-      `SELECT e.*, u.name AS reported_by_name FROM emergencies e
-       LEFT JOIN users u ON u.id = e.reported_by WHERE e.id=$1`,
+      `SELECT e.*, u.name AS reported_by_name,
+              res.name AS assigned_resource_name, res.type AS assigned_resource_type
+       FROM emergencies e
+       LEFT JOIN users u ON u.id = e.reported_by
+       LEFT JOIN resources res ON res.id = e.assigned_resource_id
+       WHERE e.id=$1`,
       [req.params.id]
     )
     if (!r.rows[0]) return res.status(404).json({ error: 'Emergency not found' })
@@ -127,11 +172,11 @@ export const getEmergency = async (req: AuthRequest, res: Response) => {
 
 export const updateEmergencyStatus = async (req: AuthRequest, res: Response) => {
   const { id } = req.params
-  const { status } = req.body
+  const { status, resource_id } = req.body  // resource_id = which resource is accepting
   const role = req.user?.role
-  console.log(`updateStatus — id:${id}, status:${status}, role:${role}, actor:${req.user?.id}`)
+  console.log(`updateStatus — id:${id}, status:${status}, role:${role}, resource:${resource_id}`)
 
-  const validStatuses = ['pending', 'responding', 'resolved', 'cancelled']
+  const validStatuses = ['pending','responding','resolved','cancelled']
   if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' })
 
   if (role === 'user') {
@@ -142,48 +187,58 @@ export const updateEmergencyStatus = async (req: AuthRequest, res: Response) => 
   }
 
   try {
-    const r = await pool.query(
-      'UPDATE emergencies SET status=$1,updated_at=NOW() WHERE id=$2 RETURNING *',
-      [status, id]
-    )
+    // When accepting, record which resource is responding
+    let sql = 'UPDATE emergencies SET status=$1, updated_at=NOW()'
+    const vals: any[] = [status]
+    let idx = 2
+
+    if (status === 'responding' && resource_id) {
+      sql += `, assigned_resource_id=$${idx++}`
+      vals.push(resource_id)
+    }
+
+    sql += ` WHERE id=$${idx} RETURNING *`
+    vals.push(id)
+
+    const r = await pool.query(sql, vals)
     if (!r.rows[0]) return res.status(404).json({ error: 'Emergency not found' })
     const updated = r.rows[0]
 
-    // Get names for rich notifications
-    let reporterName = 'Anonymous'
-    let actorName = 'System'
+    // Get names for notifications
+    let reporterName = 'Anonymous', actorName = 'System', resourceName = ''
     if (updated.reported_by) {
       const uRes = await pool.query('SELECT name FROM users WHERE id=$1', [updated.reported_by])
       if (uRes.rows[0]) reporterName = uRes.rows[0].name
     }
     if (req.user?.id) {
-      const aRes = await pool.query('SELECT name, role FROM users WHERE id=$1', [req.user.id])
+      const aRes = await pool.query('SELECT name FROM users WHERE id=$1', [req.user.id])
       if (aRes.rows[0]) actorName = aRes.rows[0].name
     }
+    if (resource_id) {
+      const resResult = await pool.query('SELECT name FROM resources WHERE id=$1', [resource_id])
+      if (resResult.rows[0]) resourceName = ` via ${resResult.rows[0].name}`
+    }
 
-    const now = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+    const now = new Date().toLocaleString('en-US', { dateStyle:'medium', timeStyle:'short' })
 
     // Notify reporter
-    const reporterMsgs: Record<string, string> = {
-      responding: `⚡ Help is on the way! ${actorName} (resource manager) is now responding to your emergency: "${updated.title}"`,
-      resolved: `🎉 Your emergency "${updated.title}" has been resolved by ${actorName}. Stay safe!`,
-      cancelled: `Your emergency report "${updated.title}" was rejected by ${actorName}.`,
+    const reporterMsgs: Record<string,string> = {
+      responding: `⚡ Help is on the way! ${actorName}${resourceName} is now responding to "${updated.title}"`,
+      resolved:   `🎉 Your emergency "${updated.title}" has been resolved by ${actorName}${resourceName}. Stay safe!`,
+      cancelled:  `Your emergency "${updated.title}" was rejected by ${actorName}.`,
     }
     if (updated.reported_by && reporterMsgs[status]) {
       const notif = await createNotif(updated.reported_by, updated.id, reporterMsgs[status])
       if (notif) io.to(`user_${updated.reported_by}`).emit('notification', notif)
     }
 
-    // Rich audit notification for admins
-    const adminMsgs: Record<string, string> = {
-      responding: `⚡ ${actorName} (manager) accepted emergency "${updated.title}" — reported by ${reporterName} — ${now}`,
-      resolved: `✅ ${actorName} (manager) resolved emergency "${updated.title}" — reported by ${reporterName} — ${now}`,
-      cancelled: `✕ ${actorName} (manager) rejected emergency "${updated.title}" — reported by ${reporterName} — ${now}`,
-      pending: `↩ Emergency "${updated.title}" reset to pending by ${actorName} — ${now}`,
+    // Admin audit
+    const adminMsgs: Record<string,string> = {
+      responding: `⚡ ${actorName} (manager) accepted "${updated.title}"${resourceName} — reported by ${reporterName} — ${now}`,
+      resolved:   `✅ ${actorName} resolved "${updated.title}"${resourceName} — reported by ${reporterName} — ${now}`,
+      cancelled:  `✕ ${actorName} rejected "${updated.title}" — reported by ${reporterName} — ${now}`,
     }
-    if (adminMsgs[status]) {
-      await notifyAllAdmins(updated.id, adminMsgs[status])
-    }
+    if (adminMsgs[status]) await notifyAllAdmins(updated.id, adminMsgs[status])
 
     io.emit('emergency_updated', updated)
     res.json(updated)
@@ -200,13 +255,16 @@ export const getStats = async (_req: AuthRequest, res: Response) => {
         COUNT(*) FILTER (WHERE status='pending')    AS pending,
         COUNT(*) FILTER (WHERE status='responding') AS responding,
         COUNT(*) FILTER (WHERE status='resolved')   AS resolved,
-        COUNT(*) FILTER (WHERE status='cancelled')  AS cancelled
+        COUNT(*) FILTER (WHERE status='cancelled')  AS cancelled,
+        COUNT(*) FILTER (WHERE priority='critical') AS critical,
+        COUNT(*) FILTER (WHERE priority='high')     AS high_priority
       FROM emergencies`)
     const byType = await pool.query(`SELECT type, COUNT(*) AS count FROM emergencies GROUP BY type ORDER BY count DESC`)
+    const byPriority = await pool.query(`SELECT priority, COUNT(*) AS count FROM emergencies GROUP BY priority ORDER BY count DESC`)
     const byDay = await pool.query(`
       SELECT DATE(created_at) AS day, COUNT(*) AS count FROM emergencies
       WHERE created_at >= NOW() - INTERVAL '7 days' GROUP BY day ORDER BY day`)
-    res.json({ summary: summary.rows[0], byType: byType.rows, byDay: byDay.rows })
+    res.json({ summary: summary.rows[0], byType: byType.rows, byPriority: byPriority.rows, byDay: byDay.rows })
   } catch (err: any) {
     console.error('getStats ERROR:', err.message)
     res.status(500).json({ error: 'Failed to fetch stats' })
