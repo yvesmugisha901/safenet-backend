@@ -15,9 +15,19 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
+// ── Allowed Origins ──────────────────────────────────────────
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:3000',
+].filter(Boolean) as string[]
+
 // ── Socket.io ────────────────────────────────────────────────
 export const io = new SocketServer(server, {
-  cors: { origin: process.env.FRONTEND_URL, methods: ['GET', 'POST'] },
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+  },
 });
 
 io.on('connection', (socket) => {
@@ -31,7 +41,15 @@ io.on('connection', (socket) => {
 });
 
 // ── Middleware ───────────────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    // allow requests with no origin (Postman, mobile apps)
+    if (!origin) return callback(null, true)
+    if (allowedOrigins.includes(origin)) return callback(null, true)
+    callback(new Error(`CORS blocked: ${origin}`))
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 // ── Routes ───────────────────────────────────────────────────
